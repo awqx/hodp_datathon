@@ -1,0 +1,176 @@
+---
+title: 'HODP Datathon report: '
+author: "Al Xin"
+date: "3/27/2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(janitor)
+library(lme4)
+```
+
+## Introduction
+
+According to the Department of Housing and Urban Development, the burden of housing cost has increased for low- and middle-income families. The standard cutoff for acceptable cost burden for housing is 30% of household income. In 2014, approximately 80% of low-income households and 60% of low-middle-income households qualified as cost burdened. Many factors can worsen housing cost burden on families, including some combination of stagnating or declining incomes or increasing housing costs. [^1] 
+
+[^1]: U.S. Department of Housing and Urban Development, "Defining Housing Affordability", n.d. https://www.huduser.gov/portal/pdredge/pdr-edge-featd-article-081417.html
+
+In this report, we will investigate possible factors contributing to increased housing costs. Todd Litman, founder of Victoria Transport Policy Institute, proposes that preventing skyrocketing housing prices and increasing affordability requires increasing construction of houses. He qualifies his statement by noting that housing prices respond favorably when zoning is converted to multi-family buildings rather than single-family buildings.[^2]
+
+[^2]: Litman, Todd, "How Filtering Increases Housing Affordability". Planetizen, August 7 2018. https://www.planetizen.com/blogs/100293-how-filtering-increases-housing-affordability
+
+Though this report does not address all the claims Litman makes in his report, we will investigate his claim of differential impact of new construction on housing prices in areas with different zoning. We will attempt to determine whether zoning for multi-family buildings in Cambridge is correlated with lower rises in housing prices during new construction. 
+
+## Data cleaning
+
+The data provided by the city of Cambridge and HODP was imported.
+
+Certain rows have an impossible year (outside of 2016-2021), likely due to a comma delimiting error. Because these data make up less than 1% of the observations, they will be removed entirely rather than corrected. 
+
+There are 68 unique zoning codes in `map_lot`. They can be collapsed based on their letter code. Ignoring the numeric specifier, we have that residential zones are given by `"A", "B", "C"`. Additionally, many residential condominiums are not labeled with any zone. We can include these blank rows as residential and clean later. There are special districts, like `"MXR"`, that contain residential homes but these are likely not relevant in answering the broader question. 
+
+We will create a dummy variable `is_res_zone` for buildings that fall into these zoning categories. 
+
+Additionally, the `state_class_code` provides increased differentiability for the purposes of the buildings. Based on information made public by Massachusetts, state class codes from 101 to 114 are relevant for our analysis here (residential buildings that may be purchased by families.) 
+
+We will create a dummy variable `is_res_code` for buildings that fall into these building class codes. 
+
+Additionally, we will remove the variable of address in order to prevent errors due to newlines in the spreadsheet cells.
+
+```{r}
+prop_raw <- read.csv("data/raw/cambridge_property.csv") %>%
+  clean_names()
+yr_index <- prop_raw$year_of_assessment > 2021 | prop_raw$year_of_assessment < 2016
+prop_raw <- prop_raw[-yr_index, ]
+
+prop_raw <- prop_raw %>% 
+  mutate(
+    zone_abbrev = zoning %>% 
+      str_remove("\\-[[:digit:]]+[[:alpha:]]?$"))
+
+prop_raw <- prop_raw %>%
+  mutate(
+    is_res_zone = zone_abbrev %in% c("A", "B", "C"))
+
+prop_raw <- select(prop_raw, -address)
+
+prop_raw <- prop_raw %>%
+  mutate(is_res_code = state_class_code >= 101 & state_class_code <= 114)
+```
+
+```{r, echo = F}
+cat(
+  "Number of impossible years:", sum(yr_index), "\n", 
+  "Proportion of impossible years:", mean(yr_index), "\n",
+  "Number of buildings in residential zones:", sum(prop_raw$is_res_zone), "\n", 
+  "Proportion of buildings in residential zones:", mean(prop_raw$is_res_zone)
+)
+```
+
+## Sorting data for new construction
+
+We select out variables that we are not investigating and do not anticipate being useful. For example, we remove most of the characteristics of the building in terms of number and type of rooms. 
+
+Using the GISID of a building, we can determine whether we have the full set of data on a building (2016-2021). We also group by building unit for apartments, condominiums, and similar multi-unit buildings.
+
+For the buildings with less than six observations per unit, we can determine if the building was destroyed or newly constructed by investigating the max and min year observed. The binary variable `is_woke` indicates new construction (records dating after 2016) while the binary variable `is_broke` indicates that the records for a building terminated earlier than 2021, likely corresponding to demolishment or removal of the building from the records. 
+
+We can then append this data to the data frame containing property details. 
+
+```{r}
+prop <- prop_raw %>%
+  select(
+    -pid, 
+    -residential_exemption, 
+    -book_page, 
+    -owner_name:-finished_basement_gross
+  )
+
+gisid_count <- prop %>%
+  filter(is_res_code == T) %>%
+  group_by(gisid, unit) %>%
+  summarize(
+    n_assess = n(), 
+    yr_max = max(year_of_assessment), 
+    yr_min = min(year_of_assessment)
+    ) %>%
+  arrange(desc(n_assess))
+
+temp <- gisid_count$yr_max == 2021 & gisid_count$yr_min == 2016
+
+gisid_count <-  mutate(
+  gisid_count, 
+  is_woke = yr_min > 2016, 
+  is_broke = yr_max < 2021, 
+) %>%
+  mutate(is_complete = !(is_woke | is_broke))
+
+prop_gisid <- inner_join(prop, gisid_count, by = c("gisid", "unit"))
+```
+
+```{r, echo = F}
+cat(
+  "Number of new buildings:", sum(gisid_count$is_woke), "\n",
+  "Number of removed buildings:", sum(gisid_count$is_broke)
+)
+```
+Because some data points do not have zoning designations, we will create a new factor `"Z"` to prevent errors when running models later.
+
+```{r}
+prop_zone <- prop %>%
+  mutate(zoning = as.character(zoning)) %>%
+  mutate(
+    zoning = ifelse(is.na(zoning) | zoning == "", "Z", zoning)
+)
+```
+
+Additionally, we will remove data examples where the GISID is not available or does not exist. 
+
+```{r}
+prop_zone <- prop_zone %>% 
+  filter(gisid != "")
+```
+
+## Establishing confounding based on year
+
+Due to housing market changes, we would like to confirm that year may be a confounding variable in changing home prices. As a result, we compare the distribution in housing prices based on year. As we have some visual evidence that the distribution increases with year, we will consider using year as a random intercept in a mixed effects model. 
+
+![Assessed value in 2016](img/assessedval2016.png)
+![Assessed value in 2017](img/assessedval2017.png)
+![Assessed value in 2018](img/assessedval2018.png)
+![Assessed value in 2019](img/assessedval2019.png)
+![Assessed value in 2020](img/assessedval2020.png)
+![Assessed value in 2021](img/assessedval2021.png)
+
+## Model-fitting
+
+Due to the range in home values, we log-transform the value of homes, as reported by `assessed_value` in the data set. The variables we consider are `zoning + is_woke + (1|year)`. Due to price inflation and housing market changes that are time-independent, we have that `year` determines random intercepts.
+
+We report the following summary from this baseline model:
+
+```{r, eval=F}
+model1 <- lmer(log_value ~ 1 + zoning + is_woke + (1|year), data = residential)
+```
+
+```{r, echo=F}
+model1 <- readRDS("model/model1.RDS")
+summary(model1)
+```
+
+As expected, new construction is correlated with increased housing prices at a significance level indicated by $t = 13.818$. In this baseline model, we see that zoning for A-2, which is associated with single-family buildings, trends toward lower decreases in price than zones C. This provides potential for further investigation.
+
+## Future directions
+
+Because housing affordability is income-dependent, we would like to examine the change in housing price relative to the change in income with respect to some region. For example, we can obtain the changes in median income in Cambridge and compare to changes in housing of the same regions.
+
+![Median household income in Cambridge in 2016](img/income.png)
+
+## Limitations 
+
+We need to further address confounding between zoning and to further delineate the zones to be more interpretable. 
+

@@ -1,0 +1,77 @@
+---
+title: "00. Data cleaning"
+author: "Al Xin"
+date: "3/27/2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = F)
+library(tidyverse)
+library(janitor)
+```
+
+The data provided by Cambridge is imported. The raw data is saved as `prop_raw`. 
+
+```{r}
+prop_raw <- read.csv("data/raw/cambridge_property.csv") %>%
+  clean_names()
+```
+
+
+We note that certain rows have an impossible year (outside of 2016-2021), likely due to a comma delimiting error. Because these data make up less than 1% of the observations, they will be removed. 
+
+```{r}
+yr_index <- prop_raw$year_of_assessment > 2021 | prop_raw$year_of_assessment < 2016
+prop_raw <- prop_raw[-yr_index, ]
+```
+```{r, echo = F}
+cat(
+  "Number of impossible years:", sum(yr_index), "\n", 
+  "Proportion of impossible years:", mean(yr_index)
+)
+```
+
+There are 68 unique zoning codes in `map_lot`. They can be collapsed based on their letter code. Ignoring the numeric specifier, we have that residential zones are given by `"A", "B", "C"`. Additionally, many residential condominiums are not labeled with any zone. We can include these blank rows as residential and clean later. There are special districts, like `"MXR"`, that contain residential homes but these are likely not relevant in answering the broader question. 
+
+We will create a dummy variable `is_res_zone` for buildings that fall into these zoning categories. 
+
+Additionally, the `state_class_code` provides increased differentiability for the purposes of the buildings. Based on information made public by Massachusetts, state class codes from 101 to 114 are relevant for our analysis here (residential buildings that may be purchased by families.) 
+
+We will create a dummy variable `is_res_code` for buildings that fall into these building class codes. 
+
+Additionally, we will remove the variable of address in order to prevent errors due to newlines in the spreadsheet cells.
+
+```{r}
+prop_raw <- prop_raw %>% 
+  mutate(
+    zone_abbrev = zoning %>% 
+      str_remove("\\-[[:digit:]]+[[:alpha:]]?$"))
+
+prop_raw <- prop_raw %>%
+  mutate(
+    is_res_zone = zone_abbrev %in% c("A", "B", "C"))
+
+prop_raw <- select(prop_raw, -address)
+```
+```{r, echo = F}
+cat(
+  "Number of buildings in residential zones:", sum(prop_raw$is_res_zone), "\n", 
+  "Proportion of buildings in residential zones:", mean(prop_raw$is_res_zone)
+)
+```
+```{r}
+prop_raw <- prop_raw %>%
+  mutate(is_res_code = state_class_code >= 101 & state_class_code <= 114)
+```
+
+We will write this into a new CSV. 
+
+```{r}
+write.csv(prop_raw, "data/residential.csv", row.names = F)
+```
+
+
+

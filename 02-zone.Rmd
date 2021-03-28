@@ -1,0 +1,41 @@
+---
+title: "02. Zoning"
+author: "Al Xin"
+date: "3/27/2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = F)
+```
+
+```{r}
+prop <- read.csv("data/gisid.csv")
+```
+
+Because some data points do not have zoning designations, we will create a new factor `"Z"` to prevent errors when running models later.
+
+```{r}
+prop_zone <- prop %>%
+  mutate(zoning = as.character(zoning)) %>%
+  mutate(
+    zoning = ifelse(is.na(zoning) | zoning == "", "Z", zoning)
+)
+```
+
+Additionally, we will remove data examples where the GISID is not available or does not exist. 
+
+```{r}
+prop_zone <- prop_zone %>% 
+  filter(gisid != "")
+```
+
+We will rewrite the file to save it. 
+
+```{r}
+write.csv(prop_zone, "data/zone.csv", row.names = F)
+```
+
+

@@ -1,0 +1,65 @@
+---
+title: "01. Initial data investigation"
+author: "Al Xin"
+date: "3/27/2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = F)
+library(tidyverse)
+library(xlsx)
+```
+
+```{r}
+prop <- read.csv("data/residential.csv")
+```
+
+At this stage, we can be more selective about the variables to include and filter the columns of our data set. 
+
+```{r}
+prop <- prop %>%
+  select(
+    -pid, 
+    -residential_exemption, 
+    -book_page, 
+    -owner_name:-finished_basement_gross
+  )
+```
+
+Using the GISID of a building, we can determine whether we have the full set of data on a building (2016-2021). 
+
+For the buildings with less than six observations per unit, we can determine if the building was destroyed or newly constructed by investigating the max and min year observed.
+
+```{r}
+gisid_count <- prop %>%
+  filter(is_res_code == T) %>%
+  group_by(gisid, unit) %>%
+  summarize(
+    n_assess = n(), 
+    yr_max = max(year_of_assessment), 
+    yr_min = min(year_of_assessment)
+    ) %>%
+  arrange(desc(n_assess))
+
+temp <- gisid_count$yr_max == 2021 & gisid_count$yr_min == 2016
+
+gisid_count <-  mutate(
+  gisid_count, 
+  is_woke = yr_min > 2016, 
+  is_broke = yr_max < 2021, 
+) %>%
+  mutate(is_complete = !(is_woke | is_broke))
+```
+
+We can then append this data to the data frame containing property details. 
+
+```{r}
+prop_gisid <- inner_join(prop, gisid_count, by = c("gisid", "unit"))
+```
+
+```{r}
+write.csv(prop_gisid, file = "data/gisid.csv", row.names = F, quote = T)
+```
